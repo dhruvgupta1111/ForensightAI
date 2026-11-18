@@ -6,7 +6,7 @@ ForenSight AI is a local-first workspace for recording forensic evidence handlin
 
 ## Architecture
 
-- `app/main.py` starts FastAPI, initializes the existing SQLite database, loads the selected experimental artifact once during application startup, and serves the existing `frontend/` interface.
+- `app/main.py` starts FastAPI, initializes the existing SQLite database, loads the selected experimental artifact once during application startup, and serves the public website and authenticated workspace from `frontend/`.
 - `app.py` provides a root-level application entry point by importing the FastAPI application from `app.main`.
 - `static/index.html` provides a lightweight redirect to the main application interface. The actual frontend is served from `frontend/`.
 - `app/routes.py` contains the existing authenticated assessment, history, and dashboard APIs. The application database schema and assessment workflow are unchanged.
@@ -18,7 +18,7 @@ ForenSight AI is a local-first workspace for recording forensic evidence handlin
 - `app/services/model_runtime.py` loads and invokes the selected artifact.
 - `app/services/prediction_logging.py` writes prediction inputs to JSON Lines.
 - `app/services/check_drift.py` compares logged feature distributions with the synthetic training set.
-- `frontend/` contains the existing responsive HTML, CSS, and vanilla JavaScript interface.
+- `frontend/` contains the responsive public landing page and the existing authenticated workspace, built with HTML, CSS, and vanilla JavaScript. From the landing page, select **Open your workspace** to sign in or create an account.
 
 ## Dataset and outcome contract
 

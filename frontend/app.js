@@ -13,6 +13,8 @@ function showToast(message, isError = false) {
   const toast = $("#toast");
   toast.textContent = message;
   toast.classList.toggle("error", isError);
+  toast.setAttribute("role", isError ? "alert" : "status");
+  toast.setAttribute("aria-live", isError ? "assertive" : "polite");
   toast.classList.add("show");
   window.clearTimeout(showToast.timeout);
   showToast.timeout = window.setTimeout(() => toast.classList.remove("show"), 3800);
@@ -154,6 +156,11 @@ function updateDashboard(data) {
   $("#chart-medium").textContent = data.medium;
   $("#chart-high").textContent = data.high;
   const max = Math.max(data.low, data.medium, data.high, 1);
+  $("#risk-chart").classList.toggle("is-empty", data.total === 0);
+  $("#risk-chart").setAttribute(
+    "aria-label",
+    `Risk distribution. Low: ${data.low}, medium: ${data.medium}, high: ${data.high}. Select a category to view matching assessments.`,
+  );
   $("#bar-low").style.width = `${data.low ? Math.max(data.low / max * 100, 4) : 0}%`;
   $("#bar-medium").style.width = `${data.medium ? Math.max(data.medium / max * 100, 4) : 0}%`;
   $("#bar-high").style.width = `${data.high ? Math.max(data.high / max * 100, 4) : 0}%`;
@@ -485,16 +492,28 @@ async function loadHistory() {
 }
 
 function navigate(view) {
-  const titles = { dashboard: "Overview", assessment: "New assessment", history: "Assessment history" };
+  const titles = {
+    dashboard: "Overview",
+    assessment: "New assessment",
+    model: "Model insights",
+    history: "Assessment history",
+  };
   $$(".page-view").forEach((section) => section.classList.toggle("hidden", section.id !== `view-${view}`));
-  $$(".nav-link").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+  $$(".nav-link").forEach((button) => {
+    const active = button.dataset.view === view;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
   $("#page-crumb").textContent = titles[view] || titles.dashboard;
   if (view === "dashboard") loadDashboard().catch((error) => showToast(error.message, true));
+  if (view === "model") loadDashboard().catch((error) => showToast(error.message, true));
   if (view === "history") loadHistory().catch((error) => showToast(error.message, true));
 }
 
 function showWorkspace(user) {
   state.user = user;
+  $("#landing-page").classList.add("hidden");
   $("#auth-screen").classList.add("hidden");
   $("#workspace").classList.remove("hidden");
   updateUserUI();
@@ -502,11 +521,20 @@ function showWorkspace(user) {
   navigate("dashboard");
 }
 
-function showAuth() {
+function showAuth(mode = "login") {
   state.user = null;
+  $("#landing-page").classList.add("hidden");
   $("#workspace").classList.add("hidden");
   $("#auth-screen").classList.remove("hidden");
-  setAuthMode("login");
+  setAuthMode(mode);
+  $("#auth-form [name=email]").focus();
+}
+
+function showLanding() {
+  state.user = null;
+  $("#workspace").classList.add("hidden");
+  $("#auth-screen").classList.add("hidden");
+  $("#landing-page").classList.remove("hidden");
 }
 
 function renderList(container, title, values) {
@@ -761,6 +789,15 @@ $("#detail-dialog").addEventListener("click", (event) => {
   if (event.target === event.currentTarget) event.currentTarget.close();
 });
 document.addEventListener("click", (event) => {
+  const authButton = event.target.closest("[data-auth-view]");
+  if (authButton) {
+    showAuth(authButton.dataset.authView);
+    return;
+  }
+  if (event.target.closest("[data-show-landing]")) {
+    showLanding();
+    return;
+  }
   const riskFilter = event.target.closest("[data-risk-filter]");
   if (riskFilter && state.user) {
     $("#risk-filter").value = riskFilter.dataset.riskFilter;
@@ -785,8 +822,10 @@ document.addEventListener("click", (event) => {
     const response = await api("/api/auth/me");
     showWorkspace(response.user);
   } catch (error) {
-    showAuth();
-    if (!(error instanceof ApiError && error.status === 401)) {
+    if (error instanceof ApiError && error.status === 401) {
+      showLanding();
+    } else {
+      showLanding();
       showToast(error.message || "Could not connect to the workspace.", true);
     }
   }
