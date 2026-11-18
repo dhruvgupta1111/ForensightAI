@@ -10,6 +10,12 @@ from app.services.synthetic_dataset import FEATURE_COLUMNS
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_PATH = PROJECT_ROOT / "model" / "model.joblib"
 LOGGER = logging.getLogger(__name__)
+EXPERIMENTAL_MODEL_DISCLAIMER = (
+    "This experimental classifier was trained and evaluated using simulated "
+    "examples, not observed forensic outcomes. It is not validated for real-world "
+    "forensic use, does not establish contamination, and its probabilities are "
+    "not calibrated real-world estimates."
+)
 
 
 def load_model_artifact(path: Path = MODEL_PATH) -> dict[str, Any] | None:

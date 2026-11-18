@@ -305,7 +305,8 @@ def test_prediction_is_authenticated_validated_and_logged(client, tmp_path, monk
     assert response.status_code == 200
     assert result["prediction"] in {"synthetic_lower_risk", "synthetic_higher_risk"}
     assert result["dataset_type"] == "synthetic"
-    assert "not a validated forensic model" in result["disclaimer"]
+    assert "not validated for real-world forensic use" in result["disclaimer"]
+    assert "simulated examples" in result["disclaimer"]
     assert sum(result["class_probabilities"].values()) == pytest.approx(1.0)
     assert log_path.is_file()
     entry = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
@@ -355,6 +356,176 @@ def test_prediction_endpoint_requires_auth_and_handles_missing_model(client):
         json=request_data,
     )
     assert unavailable.status_code == 503
+
+
+def test_combined_workflow_is_idempotent_and_persists_both_results(
+    client, tmp_path, monkeypatch
+):
+    import app.routes as routes_module
+    from app.services.model_runtime import predict_with_artifact
+
+    log_path = tmp_path / "predictions.jsonl"
+    monkeypatch.setattr(routes_module, "PREDICTION_LOG_PATH", log_path)
+    assert signup(client).status_code == 201
+    assessment = {
+        "evidence_ref": "WORKFLOW-001",
+        "evidence_type": "Trace",
+        "collection_conditions": "controlled",
+        "ppe_compliant": True,
+        "tool_condition": "clean",
+        "packaging_condition": "intact",
+        "storage_condition": "controlled",
+        "separately_packaged": True,
+        "chain_of_custody_documented": True,
+    }
+    key = "workflow-request-key-001"
+    headers = {
+        **csrf_headers(client),
+        "Idempotency-Key": key,
+    }
+
+    response = client.post(
+        "/api/assessments/workflow",
+        headers=headers,
+        json=assessment,
+    )
+    assert response.status_code == 201
+    result = response.json()
+    assert result["primary_screen"]["status"] == "succeeded"
+    assert result["primary_screen"]["method"] == "preliminary_rule_based"
+    assert result["assessment"]["risk_category"] == "low"
+    assert result["experimental_classifier"]["status"] == "succeeded"
+    prediction = result["experimental_classifier"]["result"]
+    expected_prediction = predict_with_artifact(
+        client.app.state.model_artifact,
+        {
+            key: value
+            for key, value in assessment.items()
+            if key != "evidence_ref"
+        },
+    )
+    assert prediction["prediction"] in {
+        "synthetic_lower_risk",
+        "synthetic_higher_risk",
+    }
+    assert prediction["prediction"] == expected_prediction["prediction"]
+    assert prediction["class_probabilities"] == pytest.approx(
+        expected_prediction["class_probabilities"]
+    )
+    assert prediction["algorithm"] == expected_prediction["algorithm"]
+    assert sum(prediction["class_probabilities"].values()) == pytest.approx(1.0)
+
+    repeated = client.post(
+        "/api/assessments/workflow",
+        headers={**csrf_headers(client), "Idempotency-Key": key},
+        json=assessment,
+    )
+    assert repeated.status_code == 201
+    assert repeated.json() == result
+    assert client.get(
+        f"/api/assessments/{result['assessment']['id']}/workflow"
+    ).json() == result
+
+    changed_payload = {**assessment, "evidence_type": "Digital"}
+    key_reuse = client.post(
+        "/api/assessments/workflow",
+        headers={**csrf_headers(client), "Idempotency-Key": key},
+        json=changed_payload,
+    )
+    duplicate_reference = client.post(
+        "/api/assessments/workflow",
+        headers={
+            **csrf_headers(client),
+            "Idempotency-Key": "workflow-request-key-002",
+        },
+        json=assessment,
+    )
+    assert key_reuse.status_code == 409
+    assert duplicate_reference.status_code == 409
+
+    connection = database.connect()
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM assessments").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM assessment_workflow_results"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM assessment_idempotency_keys"
+        ).fetchone()[0] == 1
+    finally:
+        connection.close()
+    assert len(log_path.read_text(encoding="utf-8").splitlines()) == 1
+
+    database.initialize_database()
+    connection = database.connect()
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM assessments").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM assessment_workflow_results"
+        ).fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+def test_failed_classifier_can_be_retried_without_duplicate_assessment(
+    client, tmp_path, monkeypatch
+):
+    import app.routes as routes_module
+
+    monkeypatch.setattr(
+        routes_module, "PREDICTION_LOG_PATH", tmp_path / "predictions.jsonl"
+    )
+    assert signup(client).status_code == 201
+    artifact = client.app.state.model_artifact
+    client.app.state.model_artifact = None
+    assessment = {
+        "evidence_ref": "WORKFLOW-RETRY-001",
+        "evidence_type": "Biological",
+        "collection_conditions": "challenging",
+        "ppe_compliant": False,
+        "tool_condition": "clean",
+        "packaging_condition": "intact",
+        "storage_condition": "controlled",
+        "separately_packaged": True,
+        "chain_of_custody_documented": False,
+    }
+
+    response = client.post(
+        "/api/assessments/workflow",
+        headers={
+            **csrf_headers(client),
+            "Idempotency-Key": "workflow-retry-request-001",
+        },
+        json=assessment,
+    )
+    assert response.status_code == 201
+    failed = response.json()
+    assert failed["assessment"]["risk_category"] == "high"
+    assert failed["experimental_classifier"]["status"] == "failed"
+    assert failed["experimental_classifier"]["result"] is None
+
+    client.app.state.model_artifact = artifact
+    retried = client.post(
+        f"/api/assessments/{failed['assessment']['id']}/workflow/retry",
+        headers=csrf_headers(client),
+    )
+    assert retried.status_code == 200
+    completed = retried.json()
+    assert completed["assessment"]["id"] == failed["assessment"]["id"]
+    assert completed["experimental_classifier"]["status"] == "succeeded"
+    assert len(client.get("/api/assessments").json()) == 1
+
+
+def test_workspace_removes_model_insights_and_prediction_preview(client):
+    page = client.get("/").text
+    workspace = page.split('<div id="workspace"', maxsplit=1)[1]
+
+    assert 'data-view="model"' not in workspace
+    assert 'id="view-model"' not in workspace
+    assert "Synthetic model preview" not in workspace
+    assert "Synthetic" not in workspace
+    assert 'id="run-experimental-prediction"' not in workspace
+    assert "Submit evidence" in workspace
 
 
 def test_experimental_model_is_loaded_once_during_application_startup(

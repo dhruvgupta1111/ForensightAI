@@ -83,3 +83,32 @@ class AssessmentResponse(BaseModel):
     risk_factors: list[str]
     recommendations: list[str]
     created_at: str
+
+
+class PrimaryScreenResult(BaseModel):
+    status: Literal["succeeded"]
+    method: str
+    risk_category: str
+    risk_score: int
+    risk_factors: list[str]
+    recommendations: list[str]
+
+
+class ExperimentalClassifierResult(BaseModel):
+    prediction: str
+    class_probabilities: dict[str, float]
+    algorithm: str
+    dataset_type: str
+    disclaimer: str
+
+
+class ExperimentalClassifierExecution(BaseModel):
+    status: Literal["succeeded", "failed"]
+    result: ExperimentalClassifierResult | None = None
+    message: str | None = None
+
+
+class AssessmentWorkflowResponse(BaseModel):
+    assessment: AssessmentResponse
+    primary_screen: PrimaryScreenResult
+    experimental_classifier: ExperimentalClassifierExecution

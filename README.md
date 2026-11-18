@@ -1,23 +1,24 @@
 # ForenSight AI
 
-ForenSight AI is a local-first workspace for recording forensic evidence handling conditions, reviewing preliminary contamination-risk indicators, and maintaining assessment history. Its rule-based assessment remains the primary screening mechanism. A separate experimental classification module demonstrates model training, tracking, serialization, and authenticated predictions.
+ForenSight AI is a workspace for recording forensic evidence handling conditions, reviewing preliminary contamination-risk indicators, and maintaining assessment history. Its rule-based assessment remains the primary screening mechanism. A separate experimental classifier demonstrates model training, tracking, serialization, and authenticated predictions.
 
-> **Important limitation:** The machine-learning dataset and its labels are synthetic. Neither the rule-based score nor the experimental output confirms that contamination occurred. This project is not a validated forensic decision system and does not measure real-world contamination detection.
+> **Important limitation:** The experimental classifier uses generated examples and labels, not observed forensic outcomes. Neither the rule-based score nor the experimental output confirms that contamination occurred. This project is not a validated forensic decision system and does not measure real-world contamination detection.
 
 ## Architecture
 
 - `app/main.py` starts FastAPI, initializes the existing SQLite database, loads the selected experimental artifact once during application startup, and serves the public website and authenticated workspace from `frontend/`.
 - `app.py` provides a root-level application entry point by importing the FastAPI application from `app.main`.
 - `static/index.html` provides a lightweight redirect to the main application interface. The actual frontend is served from `frontend/`.
-- `app/routes.py` contains the existing authenticated assessment, history, and dashboard APIs. The application database schema and assessment workflow are unchanged.
+- `app/routes.py` contains the authenticated assessment, history, dashboard, and combined-submission APIs. The original assessment schema and endpoints remain compatible; additional tables persist classifier execution results and request idempotency keys.
 - `app/prediction_routes.py` exposes an authenticated, validated `POST /predict` endpoint separate from the rule-based assessment endpoints.
+- The authenticated New Assessment form submits one request that records the primary rule-based screen and runs the experimental classifier. Classifier results are associated with the saved assessment; a failed classifier can be retried without creating another assessment.
 - `app/services/risk_assessment.py` contains the primary preliminary rule-based assessment service.
-- `app/services/synthetic_dataset.py` contains the reproducible synthetic feature and outcome generator.
+- `app/services/synthetic_dataset.py` contains the reproducible simulated feature and outcome generator.
 - `app/services/ml_experiments.py` validates data, normalizes features, and creates a grouped stratified split that keeps repeated feature profiles on one side of the train/test boundary.
 - `train.py` compares Logistic Regression and Decision Tree configurations, logs results to MLflow, writes the comparison CSV, and serializes the selected pipeline.
 - `app/services/model_runtime.py` loads and invokes the selected artifact.
 - `app/services/prediction_logging.py` writes prediction inputs to JSON Lines.
-- `app/services/check_drift.py` compares logged feature distributions with the synthetic training set.
+- `app/services/check_drift.py` compares logged feature distributions with the simulated training set.
 - `frontend/` contains the responsive public landing page and the existing authenticated workspace, built with HTML, CSS, and vanilla JavaScript. From the landing page, select **Open your workspace** to sign in or create an account.
 
 ## Dataset and outcome contract
@@ -41,11 +42,11 @@ The target distribution is:
 | `storage_condition` | Categorical string | `controlled`, `uncontrolled`, `unknown` | Records whether evidence storage conditions were controlled. |
 | `separately_packaged` | Boolean | `true`, `false` | Indicates whether evidence was packaged separately to reduce possible contact or transfer. |
 | `chain_of_custody_documented` | Boolean | `true`, `false` | Indicates whether evidence transfers and custody documentation are recorded. |
-| `synthetic_outcome` | Classification target | `synthetic_lower_risk`, `synthetic_higher_risk` | Synthetic classification label used for supervised model training and evaluation; not an observed forensic outcome. |
+| `synthetic_outcome` | Classification target | `synthetic_lower_risk`, `synthetic_higher_risk` | Existing class identifiers for supervised model training and evaluation; the labels are generated, not observed forensic outcomes. |
 
 The prediction API requires all eight input fields. Missing fields, unsupported categorical values, non-boolean values for boolean fields, and unexpected additional fields are rejected with HTTP 422. No numerical ranges apply because the contract contains no numerical feature.
 
-### Synthetic data-generation process
+### Simulated data-generation process
 
 The generator samples each feature using fixed categorical probabilities:
 
@@ -132,7 +133,7 @@ Confusion matrix (rows are actual; columns are predicted; class order is lower, 
 | Actual lower | 164 | 84 |
 | Actual higher | 57 | 70 |
 
-The held-out set was used to compare and select among configurations, so these metrics are exploratory and may be optimistic after selection. They do not constitute external validation. The dataset labels are synthetic, and these scores are not real-world forensic performance or contamination-detection accuracy. Future work would require a separately sourced and verified labeled dataset, group-aware external validation, and a pre-registered evaluation.
+The held-out set was used to compare and select among configurations, so these metrics are exploratory and may be optimistic after selection. They do not constitute external validation. The dataset labels are generated, and these scores are not real-world forensic performance or contamination-detection accuracy. Future work would require a separately sourced and verified labeled dataset, group-aware external validation, and a pre-registered evaluation.
 
 ### MLflow
 
@@ -157,7 +158,7 @@ If the artifact is missing, the application still starts, `/health` reports `exp
 | `GET /` | Public | Existing ForenSight web interface |
 | `GET /health` | Public | Health and experimental model-loaded status only |
 | `GET /docs` | Public | FastAPI Swagger UI |
-| `POST /predict` | Authenticated + CSRF | Experimental synthetic-data classification |
+| `POST /predict` | Authenticated + CSRF | Experimental classification using generated examples |
 | `GET /api/auth/csrf` | Public | Issue CSRF token |
 | `POST /api/auth/signup` | CSRF | Register and sign in |
 | `POST /api/auth/login` | CSRF | Sign in |
@@ -166,6 +167,9 @@ If the artifact is missing, the application still starts, `/health` reports `exp
 | `GET /api/dashboard` | Authenticated | Existing metrics and model evaluations |
 | `GET/POST /api/assessments` | Authenticated | Assessment history / create rule-based assessment |
 | `GET /api/assessments/{id}` | Authenticated | Read an owned assessment |
+| `POST /api/assessments/workflow` | Authenticated + CSRF | Idempotently save one assessment and run its rule-based screen and experimental classifier |
+| `GET /api/assessments/{id}/workflow` | Authenticated | Read the saved combined results |
+| `POST /api/assessments/{id}/workflow/retry` | Authenticated + CSRF | Retry a failed experimental classifier for the existing assessment |
 
 The `POST /predict` request uses the eight feature fields in the data-contract table. Example:
 
@@ -182,7 +186,9 @@ The `POST /predict` request uses the eight feature fields in the data-contract t
 }
 ```
 
-The response contains the predicted synthetic class, per-class probabilities, selected algorithm, `dataset_type: "synthetic"`, and a disclaimer. It is protected by the same JWT authentication and CSRF protections as existing unsafe API requests. The assessment form offers the experimental prediction separately; it does not change or replace the rule-based assessment. Returned probabilities are model outputs, not calibrated real-world estimates.
+The response contains the predicted class, per-class probabilities, selected algorithm, and a disclaimer. For API compatibility, the existing `dataset_type: "synthetic"` value and class identifiers remain unchanged. The New Assessment form runs this classifier alongside the primary rule-based screen and records the result against the saved assessment. Returned probabilities are model outputs, not calibrated real-world estimates.
+
+The combined submission requires an `Idempotency-Key` header. Repeating the same request with the same key returns the existing assessment and results; reusing a key with different data is rejected. A separate retry endpoint re-runs only the failed classifier for the saved assessment.
 
 Invalid examples return HTTP 422:
 
@@ -194,13 +200,13 @@ The example omits required fields. `"ppe_compliant": "true"` is also rejected be
 
 ## Existing rule-based screening and application
 
-The existing authentication, SQLite schema, assessment workflow, scoring thresholds, explanations, recommendations, history, and analytics remain separate from experimental model outputs. The overview keeps the existing Logistic Regression evaluation and adds the actual tracked comparison for both algorithms. Rule-based assessments remain the primary screening mechanism.
+The existing authentication, SQLite assessment schema, scoring thresholds, explanations, recommendations, history, and analytics remain intact. Rule-based screening and experimental classifier outputs are shown as distinct results. The classifier result and execution status are stored in an additive workflow table, and the original assessment history endpoint remains unchanged.
 
 ## Prediction logging and drift checks
 
-Each successful `/predict` request appends its feature inputs, UTC timestamp, and synthetic predicted class to `data/prediction_logs.jsonl`. It does not log passwords, tokens, account identifiers, or evidence reference IDs. The path can be overridden with `PREDICTION_LOG_PATH`. If writing fails, the application logs a warning and still returns the prediction.
+Each successful `/predict` request appends its feature inputs, UTC timestamp, and predicted class to `data/prediction_logs.jsonl`. It does not log passwords, tokens, account identifiers, or evidence reference IDs. The path can be overridden with `PREDICTION_LOG_PATH`. If writing fails, the application logs a warning and still returns the prediction.
 
-Compare logged input distributions against the synthetic training dataset:
+Compare logged input distributions against the simulated training examples:
 
 ```bash
 python -m app.services.check_drift
@@ -218,9 +224,9 @@ python -m pytest -v --tb=short
 node --check frontend/app.js
 ```
 
-The suite covers the existing authentication, assessment, history, and dashboard behavior; dataset validation and reproducibility; grouped split separation; both model pipelines and metrics; serialization/loading and predictions; MLflow run logging; API health/UI; valid and invalid authenticated prediction requests; safe prediction logging; and drift-comparison behavior.
+The suite covers authentication, assessment, history, and dashboard behavior; dataset validation and reproducibility; grouped split separation; both model pipelines and metrics; serialization/loading and predictions; MLflow run logging; API health/UI; valid and invalid authenticated prediction requests; safe prediction logging; drift comparison; combined workflow persistence and idempotency; classifier retry without duplicate assessments; additive schema initialization; and removal of the authenticated Model Insights page.
 
-Final local verification: **41 passed** with two dependency deprecation warnings (Starlette's TestClient/httpx adapter and MLflow/SQLAlchemy's `noload` strategy). `node --check frontend/app.js` also passed.
+Final local verification: **44 passed** with two dependency deprecation warnings (Starlette's TestClient/httpx adapter and MLflow/SQLAlchemy's `noload` strategy). `node --check frontend/app.js` also passed.
 
 ## Docker
 
@@ -258,7 +264,7 @@ The container was tested using host port `8001`, mapped to container port `8000`
 
 The invalid prediction test confirmed that an unsupported `evidence_type` is rejected with HTTP 422 while authentication and CSRF protections remain enabled.
 
-These results verify local Docker execution only. Remote deployment is pending.
+These results verify local Docker execution. The production application is hosted at https://forensightai-1.onrender.com.
 
 ## GitHub Actions
 
@@ -287,8 +293,7 @@ The workflow performs the following steps:
 - Protected records and prediction requests require an authenticated account.
 - `.env`, the local application database, MLflow database/artifacts, prediction logs, and Python caches are excluded from Git.
 - The project source code has been pushed to the GitHub repository.
-- Remote application deployment is the next stage of the project.
 
 ## Limitations and future work
 
-The synthetic generator encodes assumed relationships, and the model learns those generated labels rather than verified contamination outcomes. The reported holdout results are exploratory, come from a single split also used for configuration selection, and must not be interpreted as forensic accuracy. The rule-based score is still preliminary and separate. A future study would need accessible, ethically and legally governed forensic data with verified outcome labels, group-aware independent evaluation, expert review, and documented deployment monitoring before any real-world claims.
+The generator encodes assumed relationships, and the model learns generated labels rather than verified contamination outcomes. The reported holdout results are exploratory, come from a single split also used for configuration selection, and must not be interpreted as forensic accuracy. The rule-based score is still preliminary and separate. A future study would need accessible, ethically and legally governed forensic data with verified outcome labels, group-aware independent evaluation, expert review, and documented deployment monitoring before any real-world claims.

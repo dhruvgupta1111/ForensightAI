@@ -290,10 +290,6 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 20 7v5.5c0 4.7-3.2 7.6-8 9.5-4.8-1.9-8-4.8-8-9.5V7l8-3.5Z"/><path d="M12 8v5M12 16.5h.01"/></svg>
             New assessment
           </button>
-          <button class="nav-link" type="button" data-view="model">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5h16M6.5 16V10m5 6V5m5 11v-8"/><circle cx="6.5" cy="8" r="1.5"/><circle cx="11.5" cy="3" r="1.5"/><circle cx="16.5" cy="6" r="1.5"/></svg>
-            Model insights
-          </button>
           <button class="nav-link" type="button" data-view="history">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16M4 12h16M4 16.5h10"/><circle cx="18" cy="17" r="3.5"/><path d="M18 15v2l1.5 1"/></svg>
             Assessment history
@@ -396,49 +392,6 @@
           <p class="page-footnote">ForenSight AI provides preliminary rule-based screening. Risk indicators are not confirmation of contamination.</p>
         </section>
 
-        <section id="view-model" class="page-view hidden">
-          <div class="page-heading heading-with-action">
-            <div>
-              <p class="eyebrow">EXPERIMENTAL MACHINE LEARNING</p>
-              <h1>Model insights</h1>
-              <p class="muted">Evaluation metrics, dataset details and tracked configuration comparisons.</p>
-            </div>
-            <button class="button button-secondary" type="button" data-view="assessment">Open prediction form <span aria-hidden="true">→</span></button>
-          </div>
-          <article class="surface model-evaluation-card">
-            <div class="section-heading"><div><p class="eyebrow">MODEL OVERVIEW</p><h2>Experimental evaluation</h2></div><span id="model-status" class="model-status">Experimental — synthetic data</span></div>
-            <p id="model-scope" class="model-scope">Experimental metrics are calculated from a purpose-built synthetic dataset, not observed forensic outcomes.</p>
-            <p class="model-module-note">Logistic Regression is implemented as a separate experimental module and does not change the primary rule-based assessment.</p>
-            <div class="model-meta-grid">
-              <div><span>Training dataset source</span><strong id="model-source">Synthetic demonstration dataset</strong></div>
-              <div><span>Training records</span><strong id="model-training-count">—</strong></div>
-              <div><span>Testing records</span><strong id="model-testing-count">—</strong></div>
-              <div><span>Model status</span><strong id="model-status-detail">Experimental — synthetic data</strong></div>
-            </div>
-            <div class="model-metric-grid">
-              <div class="model-metric"><span>Accuracy</span><strong id="model-accuracy" class="is-unavailable">Not available</strong></div>
-              <div class="model-metric"><span>Macro precision</span><strong id="model-precision" class="is-unavailable">Not available</strong></div>
-              <div class="model-metric"><span>Macro recall</span><strong id="model-recall" class="is-unavailable">Not available</strong></div>
-              <div class="model-metric"><span>Macro F1-score</span><strong id="model-f1" class="is-unavailable">Not available</strong></div>
-            </div>
-            <div class="model-detail-grid">
-              <div><h3>Confusion matrix</h3><div id="model-confusion-matrix" class="model-table-empty" aria-live="polite"></div></div>
-              <div><h3>Class-wise results</h3><div id="model-class-metrics" class="model-table-empty" aria-live="polite"></div></div>
-            </div>
-            <p class="model-disclaimer">Experimental Logistic Regression holdout evaluation on synthetic data only. Simulated labels and metrics are not observed contamination outcomes and do not establish real-world forensic performance. The rule-based assessment remains the primary screening mechanism.</p>
-            <div class="comparison-section">
-              <div class="section-heading"><div><p class="eyebrow">TRACKED EXPERIMENTS</p><h3>Algorithm comparison</h3></div><span id="selected-model-label" class="model-status">Selected model: unavailable</span></div>
-              <div id="experiment-comparison-table" class="model-table-empty" aria-live="polite"></div>
-              <div class="model-detail-grid comparison-detail-grid">
-                <div><h3>Selected model confusion matrix</h3><div id="selected-model-confusion-matrix" class="model-table-empty" aria-live="polite"></div></div>
-                <div><h3>Selected model class-wise results</h3><div id="selected-model-class-metrics" class="model-table-empty" aria-live="polite"></div></div>
-              </div>
-              <p class="model-disclaimer">Configuration comparisons use the same grouped, stratified synthetic holdout. The selected configuration is an experimental choice, not external forensic validation.</p>
-            </div>
-          </article>
-          <p class="page-footnote">Synthetic training data and simulated outcomes are not evidence of real-world forensic model performance.</p>
-        </section>
-
         <section id="view-assessment" class="page-view hidden">
           <div class="page-heading"><p class="eyebrow">DOCUMENT HANDLING CONDITIONS</p><h1>New assessment</h1><p class="muted">Capture observed conditions to support a consistent evidence review.</p></div>
           <div class="assessment-layout">
@@ -462,24 +415,12 @@
                   <label class="field field-full"><span>Chain-of-custody documentation complete <b>*</b></span><select name="chain_of_custody_documented" required><option value="" disabled selected>Select status</option><option value="true">Yes</option><option value="false">No / incomplete</option></select></label>
                 </div>
               </div>
-              <div class="form-actions"><span><b>*</b> Required fields</span><button class="button button-primary" type="submit">Assess evidence <span aria-hidden="true">→</span></button></div>
+              <div class="form-actions"><span><b>*</b> Required fields</span><button class="button button-primary" type="submit">Submit evidence <span aria-hidden="true">→</span></button></div>
             </form>
             <aside class="assessment-aside">
               <div class="surface guidance-card"><span class="guidance-icon">i</span><h2>How to use this assessment</h2><p>Enter known handling conditions only. Choose “Unknown” rather than inferring a condition that was not documented.</p><div class="guidance-divider"></div><p class="guidance-emphasis">A risk indicator is a prompt for review—not a finding that contamination occurred.</p></div>
-              <div id="assessment-result" class="surface result-card hidden" aria-live="polite"></div>
+              <div id="assessment-result" class="surface result-card hidden" aria-live="polite" aria-busy="false"></div>
             </aside>
-            <section class="surface experimental-prediction">
-              <div class="experimental-copy">
-                <p class="eyebrow">EXPERIMENTAL MACHINE LEARNING</p>
-                <h2>Synthetic model preview</h2>
-                <p>Run a separate classification using the handling fields above. This does not change or replace the rule-based assessment.</p>
-                <p class="prediction-disclaimer">Synthetic training data only. This experimental output is not real-world forensic validation and does not establish contamination.</p>
-              </div>
-              <div class="experimental-controls">
-                <button id="run-experimental-prediction" class="button button-secondary" type="button">Run experimental prediction <span aria-hidden="true">→</span></button>
-                <div id="experimental-prediction-result" class="prediction-result" aria-live="polite"></div>
-              </div>
-            </section>
           </div>
         </section>
 

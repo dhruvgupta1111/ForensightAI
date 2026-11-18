@@ -5,17 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from app.auth import get_current_user
 from app.config import PREDICTION_LOG_PATH
 from app.schemas import PredictionRequest
-from app.services.model_runtime import predict_with_artifact
+from app.services.model_runtime import (
+    EXPERIMENTAL_MODEL_DISCLAIMER,
+    predict_with_artifact,
+)
 from app.services.prediction_logging import append_prediction_log
 
 router = APIRouter()
-
-_DISCLAIMER = (
-    "Experimental classification trained on synthetic data only. It is not a "
-    "validated forensic model, does not establish that contamination occurred, "
-    "and does not replace the primary rule-based screening assessment. Model "
-    "probabilities are not calibrated real-world estimates."
-)
 
 
 @router.post("/predict")
@@ -41,5 +37,5 @@ def predict(
     return {
         **result,
         "dataset_type": "synthetic",
-        "disclaimer": _DISCLAIMER,
+        "disclaimer": EXPERIMENTAL_MODEL_DISCLAIMER,
     }

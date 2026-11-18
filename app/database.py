@@ -63,6 +63,36 @@ def initialize_database() -> None:
                 ON assessments(user_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_assessments_user_risk
                 ON assessments(user_id, risk_category);
+
+            CREATE TABLE IF NOT EXISTS assessment_workflow_results (
+                assessment_id INTEGER PRIMARY KEY
+                    REFERENCES assessments(id) ON DELETE CASCADE,
+                experimental_status TEXT NOT NULL CHECK (
+                    experimental_status IN ('succeeded', 'failed')
+                ),
+                experimental_result TEXT,
+                error_message TEXT,
+                updated_at TEXT NOT NULL,
+                CHECK (
+                    (experimental_status = 'succeeded'
+                        AND experimental_result IS NOT NULL
+                        AND error_message IS NULL)
+                    OR
+                    (experimental_status = 'failed'
+                        AND experimental_result IS NULL
+                        AND error_message IS NOT NULL)
+                )
+            );
+
+            CREATE TABLE IF NOT EXISTS assessment_idempotency_keys (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                idempotency_key TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                assessment_id INTEGER NOT NULL
+                    REFERENCES assessments(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, idempotency_key)
+            );
             """
         )
     finally:

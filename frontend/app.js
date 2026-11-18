@@ -35,7 +35,15 @@ async function api(path, options = {}) {
   }
   const response = await fetch(path, { ...options, headers, credentials: "same-origin" });
   const data = response.status === 204 ? null : await response.json();
-  if (!response.ok) throw new ApiError(data?.detail || "The request could not be completed.", response.status);
+  if (!response.ok) {
+    const detail = data?.detail;
+    const message = typeof detail === "string"
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((item) => item.msg).filter(Boolean).join(" ")
+        : "The request could not be completed.";
+    throw new ApiError(message, response.status);
+  }
   return data;
 }
 
@@ -184,200 +192,11 @@ function updateDashboard(data) {
   );
   renderMonthlyTrend(data.monthly_trend, $("#trend-chart"));
   renderHighRiskAssessments(data.high_risk_assessments, $("#high-risk-content"));
-  updateModelEvaluation(data.model_evaluation);
-  renderExperimentComparison(data.model_comparison || []);
 
   const recent = $("#recent-content");
   recent.replaceChildren(data.recent.length
     ? assessmentTable(data.recent, true)
     : emptyState("No assessments yet", "Create a record to see your recent casework here.", true));
-}
-
-function formatModelMetric(value) {
-  return value === null || value === undefined
-    ? "Not available"
-    : new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 }).format(value);
-}
-
-function renderModelEmptyState(container, title, message) {
-  const state = document.createElement("div");
-  state.className = "model-empty-state";
-  const icon = document.createElement("span");
-  icon.className = "model-empty-icon";
-  icon.setAttribute("aria-hidden", "true");
-  icon.textContent = "i";
-  const heading = document.createElement("strong");
-  heading.textContent = title;
-  const description = document.createElement("p");
-  description.textContent = message;
-  state.append(icon, heading, description);
-  container.className = "model-table-empty";
-  container.append(state);
-}
-
-function renderConfusionMatrix(matrix, container = $("#model-confusion-matrix")) {
-  container.replaceChildren();
-  if (!matrix) {
-    renderModelEmptyState(
-      container,
-      "Confusion matrix unavailable",
-      "A confusion matrix appears after the bundled synthetic dataset is evaluated."
-    );
-    return;
-  }
-
-  const wrapper = document.createElement("div");
-  wrapper.className = "table-wrap";
-  const table = document.createElement("table");
-  table.className = "data-table model-data-table";
-  const caption = document.createElement("caption");
-  caption.textContent = "Rows: actual class · Columns: predicted class";
-  const head = document.createElement("thead");
-  const headerRow = document.createElement("tr");
-  const corner = document.createElement("th");
-  corner.textContent = "Actual \\ Predicted";
-  headerRow.append(corner);
-  matrix.predicted_classes.forEach((label) => {
-    const header = document.createElement("th");
-    header.scope = "col";
-    header.textContent = label.replaceAll("_", " ");
-    headerRow.append(header);
-  });
-  head.append(headerRow);
-  const body = document.createElement("tbody");
-  matrix.actual_classes.forEach((label, rowIndex) => {
-    const row = document.createElement("tr");
-    const actual = document.createElement("th");
-    actual.scope = "row";
-    actual.textContent = label.replaceAll("_", " ");
-    row.append(actual);
-    matrix.counts[rowIndex].forEach((count) => {
-      const cell = document.createElement("td");
-      cell.textContent = count;
-      row.append(cell);
-    });
-    body.append(row);
-  });
-  table.append(caption, head, body);
-  wrapper.append(table);
-  container.className = "model-table-wrap";
-  container.append(wrapper);
-}
-
-function renderClassMetrics(metrics, container = $("#model-class-metrics")) {
-  container.replaceChildren();
-  if (!metrics.length) {
-    renderModelEmptyState(
-      container,
-      "Class-wise results unavailable",
-      "Class-level metrics will appear after evaluation on the synthetic held-out set."
-    );
-    return;
-  }
-
-  const wrapper = document.createElement("div");
-  wrapper.className = "table-wrap";
-  const table = document.createElement("table");
-  table.className = "data-table model-data-table";
-  const head = document.createElement("thead");
-  head.innerHTML = "<tr><th>Actual class</th><th>Precision</th><th>Recall</th><th>F1</th><th>Support</th></tr>";
-  const body = document.createElement("tbody");
-  metrics.forEach((metric) => {
-    const row = document.createElement("tr");
-    [
-      metric.label.replaceAll("_", " "),
-      formatModelMetric(metric.precision),
-      formatModelMetric(metric.recall),
-      formatModelMetric(metric.f1),
-      metric.support,
-    ].forEach((value) => {
-      const cell = document.createElement("td");
-      cell.textContent = value;
-      row.append(cell);
-    });
-    body.append(row);
-  });
-  table.append(head, body);
-  wrapper.append(table);
-  container.className = "model-table-wrap";
-  container.append(wrapper);
-}
-
-function renderExperimentComparison(results) {
-  const container = $("#experiment-comparison-table");
-  container.replaceChildren();
-  const selected = results.find((result) => result.selected);
-  const selectedMatrix = $("#selected-model-confusion-matrix");
-  const selectedClasses = $("#selected-model-class-metrics");
-  $("#selected-model-label").textContent = selected
-    ? `Selected model: ${selected.algorithm}`
-    : "Selected model: unavailable";
-  if (!results.length) {
-    renderModelEmptyState(
-      container,
-      "Experiment comparison unavailable",
-      "Train the experimental models to show their synthetic holdout comparison.",
-    );
-    renderConfusionMatrix(null, selectedMatrix);
-    renderClassMetrics([], selectedClasses);
-    return;
-  }
-
-  const wrapper = document.createElement("div");
-  wrapper.className = "table-wrap";
-  const table = document.createElement("table");
-  table.className = "data-table model-data-table";
-  const head = document.createElement("thead");
-  head.innerHTML = "<tr><th>Algorithm</th><th>Configuration</th><th>Accuracy</th><th>Macro precision</th><th>Macro recall</th><th>Macro F1</th><th>Selection</th></tr>";
-  const body = document.createElement("tbody");
-  results.forEach((result) => {
-    const row = document.createElement("tr");
-    const values = [
-      result.algorithm,
-      result.hyperparameters,
-      formatModelMetric(result.accuracy),
-      formatModelMetric(result.macro_precision),
-      formatModelMetric(result.macro_recall),
-      formatModelMetric(result.macro_f1),
-      result.selected ? "Selected" : "Compared",
-    ];
-    values.forEach((value) => {
-      const cell = document.createElement("td");
-      cell.textContent = value;
-      row.append(cell);
-    });
-    body.append(row);
-  });
-  table.append(head, body);
-  wrapper.append(table);
-  container.className = "model-table-wrap";
-  container.append(wrapper);
-  renderConfusionMatrix(selected ? selected.confusion_matrix : null, selectedMatrix);
-  renderClassMetrics(selected ? selected.class_metrics : [], selectedClasses);
-}
-
-function updateModelEvaluation(evaluation) {
-  if (!evaluation) return;
-  $("#model-status").textContent = evaluation.model_status;
-  $("#model-status").dataset.state = evaluation.status;
-  $("#model-status-detail").textContent = evaluation.model_status;
-  $("#model-scope").textContent = evaluation.evaluation_scope;
-  $("#model-source").textContent = evaluation.dataset_source || "Not configured";
-  $("#model-training-count").textContent = evaluation.training_records ?? "—";
-  $("#model-testing-count").textContent = evaluation.testing_records ?? "—";
-  [
-    ["#model-accuracy", evaluation.accuracy],
-    ["#model-precision", evaluation.precision_macro],
-    ["#model-recall", evaluation.recall_macro],
-    ["#model-f1", evaluation.macro_f1],
-  ].forEach(([selector, value]) => {
-    const metric = $(selector);
-    const unavailable = value === null || value === undefined;
-    metric.textContent = formatModelMetric(value);
-    metric.classList.toggle("is-unavailable", unavailable);
-  });
-  renderConfusionMatrix(evaluation.confusion_matrix);
-  renderClassMetrics(evaluation.class_metrics || []);
 }
 
 function renderAnalyticsRows(container, rows, labelKey, total, emptyTitle, emptyMessage) {
@@ -495,7 +314,6 @@ function navigate(view) {
   const titles = {
     dashboard: "Overview",
     assessment: "New assessment",
-    model: "Model insights",
     history: "Assessment history",
   };
   $$(".page-view").forEach((section) => section.classList.toggle("hidden", section.id !== `view-${view}`));
@@ -507,7 +325,6 @@ function navigate(view) {
   });
   $("#page-crumb").textContent = titles[view] || titles.dashboard;
   if (view === "dashboard") loadDashboard().catch((error) => showToast(error.message, true));
-  if (view === "model") loadDashboard().catch((error) => showToast(error.message, true));
   if (view === "history") loadHistory().catch((error) => showToast(error.message, true));
 }
 
@@ -647,11 +464,59 @@ function showAssessmentDetails(record) {
   $("#detail-dialog").showModal();
 }
 
-function showAssessmentResult(result) {
+function showAssessmentProgress() {
+  const container = $("#assessment-result");
+  container.replaceChildren();
+  container.classList.remove("hidden");
+  container.setAttribute("aria-busy", "true");
+
+  const loading = document.createElement("div");
+  loading.className = "workflow-loading";
+  const spinner = document.createElement("span");
+  spinner.className = "workflow-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  const message = document.createElement("div");
+  const heading = document.createElement("strong");
+  heading.textContent = "Processing your assessment";
+  const detail = document.createElement("p");
+  detail.textContent = "Saving the primary screen and running the experimental classifier. Both results will appear here.";
+  message.append(heading, detail);
+  loading.append(spinner, message);
+  container.append(loading);
+}
+
+function modelClassLabel(label) {
+  const labels = {
+    synthetic_lower_risk: "Lower-risk training class",
+    synthetic_higher_risk: "Higher-risk training class",
+  };
+  return labels[label] || "Unrecognized training class";
+}
+
+function showAssessmentError(error) {
+  const container = $("#assessment-result");
+  container.replaceChildren();
+  container.classList.remove("hidden");
+  container.setAttribute("aria-busy", "false");
+  const heading = document.createElement("h2");
+  heading.textContent = "Submission could not be confirmed";
+  const message = document.createElement("p");
+  message.textContent = error.message || "The assessment could not be completed.";
+  const recovery = document.createElement("p");
+  recovery.textContent = "If you retry, keep the same form values so the submission can be safely recovered.";
+  container.append(heading, message, recovery);
+}
+
+function showAssessmentResult(workflow) {
+  const result = workflow.assessment;
+  const primary = workflow.primary_screen;
+  const experimental = workflow.experimental_classifier;
   const container = $("#assessment-result");
   container.dataset.riskCategory = result.risk_category;
   container.replaceChildren();
   container.classList.remove("hidden");
+  container.setAttribute("aria-busy", "false");
+
   const heading = document.createElement("div");
   heading.className = "result-heading";
   const title = document.createElement("h2");
@@ -659,79 +524,75 @@ function showAssessmentResult(result) {
   const badgeElement = document.createElement("span");
   badgeElement.innerHTML = badge(result.risk_category);
   heading.append(title, badgeElement);
-  const score = document.createElement("div");
-  score.className = "result-score";
-  score.textContent = String(result.risk_score);
-  const suffix = document.createElement("small");
-  suffix.textContent = " preliminary points";
-  score.append(suffix);
   const reference = document.createElement("p");
   reference.className = "muted";
   reference.style.fontSize = "10px";
   reference.textContent = `Saved as ${result.evidence_ref}`;
-  container.append(heading, score, reference);
-  renderRiskExplanation(container, result.risk_factors, result.risk_score);
-  renderList(container, "Precaution recommendations", result.recommendations);
-}
+  container.append(heading, reference);
 
-function showExperimentalPrediction(result) {
-  const container = $("#experimental-prediction-result");
-  container.replaceChildren();
-  const heading = document.createElement("strong");
-  heading.textContent = `Synthetic outcome: ${result.prediction.replaceAll("_", " ")}`;
-  const algorithm = document.createElement("p");
-  algorithm.textContent = `Algorithm: ${result.algorithm}`;
-  const probabilities = document.createElement("ul");
-  Object.entries(result.class_probabilities).forEach(([label, probability]) => {
-    const item = document.createElement("li");
-    item.textContent = `${label.replaceAll("_", " ")}: ${new Intl.NumberFormat(undefined, {
-      style: "percent",
-      maximumFractionDigits: 1,
-    }).format(probability)}`;
-    probabilities.append(item);
-  });
-  const note = document.createElement("p");
-  note.textContent = result.disclaimer;
-  container.append(heading, algorithm, probabilities, note);
-  container.classList.add("has-result");
-}
+  const primarySection = document.createElement("section");
+  primarySection.className = "workflow-result-section";
+  const primaryHeading = document.createElement("div");
+  primaryHeading.className = "workflow-result-heading";
+  const primaryTitle = document.createElement("h3");
+  primaryTitle.textContent = "Primary rule-based screen";
+  const primaryStatus = document.createElement("span");
+  primaryStatus.className = "workflow-status";
+  primaryStatus.textContent = primary.status === "succeeded" ? "Recorded" : "Failed";
+  primaryHeading.append(primaryTitle, primaryStatus);
+  const score = document.createElement("p");
+  score.textContent = `${primary.risk_category[0].toUpperCase()}${primary.risk_category.slice(1)} preliminary indicator · ${primary.risk_score} points.`;
+  primarySection.append(primaryHeading, score);
+  container.append(primarySection);
+  renderRiskExplanation(container, primary.risk_factors, primary.risk_score);
+  renderList(container, "Precaution recommendations", primary.recommendations);
 
-$("#run-experimental-prediction").addEventListener("click", async (event) => {
-  const button = event.currentTarget;
-  const form = $("#assessment-form");
-  const featureNames = [
-    "evidence_type",
-    "collection_conditions",
-    "ppe_compliant",
-    "tool_condition",
-    "packaging_condition",
-    "storage_condition",
-    "separately_packaged",
-    "chain_of_custody_documented",
-  ];
-  const values = Object.fromEntries(new FormData(form).entries());
-  if (featureNames.some((name) => !values[name])) {
-    showToast("Select every handling feature before running the experimental model.", true);
-    return;
+  const experimentalSection = document.createElement("section");
+  experimentalSection.className = "workflow-result-section";
+  const experimentalHeading = document.createElement("div");
+  experimentalHeading.className = "workflow-result-heading";
+  const experimentalTitle = document.createElement("h3");
+  experimentalTitle.textContent = "Experimental classifier";
+  const experimentalStatus = document.createElement("span");
+  experimentalStatus.className = `workflow-status${experimental.status === "failed" ? " failed" : ""}`;
+  experimentalStatus.textContent = experimental.status === "succeeded" ? "Completed" : "Needs retry";
+  experimentalHeading.append(experimentalTitle, experimentalStatus);
+  experimentalSection.append(experimentalHeading);
+
+  if (experimental.status === "succeeded" && experimental.result) {
+    const modelResult = experimental.result;
+    const prediction = document.createElement("strong");
+    prediction.textContent = `Classifier output: ${modelClassLabel(modelResult.prediction)}`;
+    const algorithm = document.createElement("p");
+    algorithm.textContent = `Algorithm: ${modelResult.algorithm}`;
+    const probabilityHeading = document.createElement("p");
+    probabilityHeading.textContent = "Model-reported class distribution:";
+    const probabilities = document.createElement("ul");
+    probabilities.className = "workflow-class-list";
+    Object.entries(modelResult.class_probabilities).forEach(([label, probability]) => {
+      const item = document.createElement("li");
+      item.textContent = `${modelClassLabel(label)}: ${new Intl.NumberFormat(undefined, {
+        style: "percent",
+        maximumFractionDigits: 1,
+      }).format(probability)}`;
+      probabilities.append(item);
+    });
+    const disclaimer = document.createElement("p");
+    disclaimer.className = "workflow-disclaimer";
+    disclaimer.textContent = modelResult.disclaimer;
+    experimentalSection.append(prediction, algorithm, probabilityHeading, probabilities, disclaimer);
+  } else {
+    const message = document.createElement("p");
+    message.textContent = experimental.message || "The classifier did not return a result.";
+    const retry = document.createElement("button");
+    retry.className = "button button-secondary workflow-retry";
+    retry.type = "button";
+    retry.dataset.retryAssessment = result.id;
+    retry.textContent = "Retry classifier";
+    experimentalSection.append(message, retry);
   }
-  values.ppe_compliant = values.ppe_compliant === "true";
-  values.separately_packaged = values.separately_packaged === "true";
-  values.chain_of_custody_documented = values.chain_of_custody_documented === "true";
-  const predictionInput = Object.fromEntries(
-    featureNames.map((name) => [name, values[name]]),
-  );
-  button.disabled = true;
-  try {
-    showExperimentalPrediction(await api("/predict", {
-      method: "POST",
-      body: JSON.stringify(predictionInput),
-    }));
-  } catch (error) {
-    showToast(error.message, true);
-  } finally {
-    button.disabled = false;
-  }
-});
+  container.append(experimentalSection);
+}
 
 $("#auth-switch").addEventListener("click", () => setAuthMode(state.authMode === "login" ? "signup" : "login"));
 $("#auth-form").addEventListener("submit", async (event) => {
@@ -754,22 +615,48 @@ $("#auth-form").addEventListener("submit", async (event) => {
 $("#assessment-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
+  if (!form.reportValidity()) return;
   const values = Object.fromEntries(new FormData(form).entries());
   values.ppe_compliant = values.ppe_compliant === "true";
   values.separately_packaged = values.separately_packaged === "true";
   values.chain_of_custody_documented = values.chain_of_custody_documented === "true";
   const button = form.querySelector('[type="submit"]');
+  const controls = [...form.querySelectorAll("input, select, button")];
+  form.dataset.idempotencyKey ||= crypto.randomUUID();
   button.disabled = true;
+  button.textContent = "Processing…";
+  controls.forEach((control) => { control.disabled = true; });
+  form.setAttribute("aria-busy", "true");
+  showAssessmentProgress();
   try {
-    const result = await api("/api/assessments", { method: "POST", body: JSON.stringify(values) });
-    showAssessmentResult(result);
-    form.reset();
-    showToast("Assessment saved to your history.");
+    const workflow = await api("/api/assessments/workflow", {
+      method: "POST",
+      headers: { "Idempotency-Key": form.dataset.idempotencyKey },
+      body: JSON.stringify(values),
+    });
+    showAssessmentResult(workflow);
+    if (workflow.experimental_classifier.status === "succeeded") {
+      form.reset();
+      delete form.dataset.idempotencyKey;
+      showToast("Assessment saved and both results are ready.");
+    } else {
+      showToast("Assessment saved; the experimental classifier needs a retry.", true);
+    }
     loadDashboard().catch((error) => showToast(error.message, true));
   } catch (error) {
+    showAssessmentError(error);
     showToast(error.message, true);
   } finally {
+    controls.forEach((control) => { control.disabled = false; });
     button.disabled = false;
+    button.innerHTML = 'Submit evidence <span aria-hidden="true">→</span>';
+    form.setAttribute("aria-busy", "false");
+  }
+});
+
+$("#assessment-form").addEventListener("input", (event) => {
+  if (event.currentTarget.getAttribute("aria-busy") !== "true") {
+    delete event.currentTarget.dataset.idempotencyKey;
   }
 });
 
@@ -788,7 +675,32 @@ $("#close-dialog").addEventListener("click", () => $("#detail-dialog").close());
 $("#detail-dialog").addEventListener("click", (event) => {
   if (event.target === event.currentTarget) event.currentTarget.close();
 });
-document.addEventListener("click", (event) => {
+document.addEventListener("click", async (event) => {
+  const retryButton = event.target.closest("[data-retry-assessment]");
+  if (retryButton && state.user) {
+    retryButton.disabled = true;
+    retryButton.textContent = "Retrying…";
+    try {
+      const workflow = await api(
+        `/api/assessments/${retryButton.dataset.retryAssessment}/workflow/retry`,
+        { method: "POST" },
+      );
+      showAssessmentResult(workflow);
+      if (workflow.experimental_classifier.status === "succeeded") {
+        const form = $("#assessment-form");
+        form.reset();
+        delete form.dataset.idempotencyKey;
+        showToast("The classifier result is saved with the assessment.");
+      } else {
+        showToast(workflow.experimental_classifier.message, true);
+      }
+    } catch (error) {
+      retryButton.disabled = false;
+      retryButton.textContent = "Retry classifier";
+      showToast(error.message, true);
+    }
+    return;
+  }
   const authButton = event.target.closest("[data-auth-view]");
   if (authButton) {
     showAuth(authButton.dataset.authView);

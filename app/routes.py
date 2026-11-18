@@ -1,10 +1,21 @@
+import hashlib
 import json
+import logging
 import secrets
 import sqlite3
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from pwdlib.exceptions import UnknownHashError
 
 from app.auth import (
@@ -13,22 +24,33 @@ from app.auth import (
     hash_password,
     verify_password,
 )
-from app.config import COOKIE_SECURE, JWT_EXPIRE_MINUTES
+from app.config import COOKIE_SECURE, JWT_EXPIRE_MINUTES, PREDICTION_LOG_PATH
 from app.database import get_db
 from app.schemas import (
     AssessmentRequest,
     AssessmentResponse,
+    AssessmentWorkflowResponse,
     Credentials,
     SignupRequest,
 )
 from app.services.logistic_regression import get_model_evaluation
+from app.services.model_runtime import (
+    EXPERIMENTAL_MODEL_DISCLAIMER,
+    predict_with_artifact,
+)
+from app.services.prediction_logging import append_prediction_log
 from app.services.risk_assessment import PreliminaryRuleBasedService
+from app.services.synthetic_dataset import FEATURE_COLUMNS
 
 router = APIRouter(prefix="/api")
 risk_service = PreliminaryRuleBasedService()
+LOGGER = logging.getLogger(__name__)
 CSRF_COOKIE = "forensight_csrf"
 AUTH_COOKIE = "access_token"
 EVIDENCE_TYPES = ("Biological", "Trace", "Digital", "Firearms", "Document", "Other")
+EXPERIMENTAL_RETRY_MESSAGE = (
+    "The experimental classifier could not complete. You can retry it."
+)
 
 
 def _set_auth_cookie(response: Response, token: str) -> None:
@@ -77,6 +99,123 @@ def _assessment_payload(record) -> dict:
         "recommendations": json.loads(record["recommendations"]),
         "created_at": record["created_at"],
     }
+
+
+def _insert_assessment_record(db, user_id, data, assessment, created_at):
+    cursor = db.execute(
+        """
+        INSERT INTO assessments (
+            user_id, evidence_ref, evidence_type, collection_conditions,
+            ppe_compliant, tool_condition, packaging_condition, storage_condition,
+            separately_packaged, chain_of_custody_documented, risk_category,
+            risk_score, risk_factors, recommendations, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            data.evidence_ref,
+            data.evidence_type,
+            data.collection_conditions,
+            int(data.ppe_compliant),
+            data.tool_condition,
+            data.packaging_condition,
+            data.storage_condition,
+            int(data.separately_packaged),
+            int(data.chain_of_custody_documented),
+            assessment.category,
+            assessment.score,
+            json.dumps(assessment.factors),
+            json.dumps(assessment.recommendations),
+            created_at,
+        ),
+    )
+    return cursor.lastrowid
+
+
+def _experimental_execution(request: Request, features: dict) -> dict:
+    artifact = getattr(request.app.state, "model_artifact", None)
+    if artifact is None:
+        return {
+            "status": "failed",
+            "result": None,
+            "message": "The experimental classifier is unavailable. You can retry it.",
+        }
+
+    try:
+        result = predict_with_artifact(artifact, features)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        LOGGER.exception("The experimental classifier failed during an assessment.")
+        return {
+            "status": "failed",
+            "result": None,
+            "message": EXPERIMENTAL_RETRY_MESSAGE,
+        }
+
+    return {
+        "status": "succeeded",
+        "result": {
+            **result,
+            "dataset_type": "synthetic",
+            "disclaimer": EXPERIMENTAL_MODEL_DISCLAIMER,
+        },
+        "message": None,
+    }
+
+
+def _workflow_response(db, user_id: int, assessment_id: int):
+    record = db.execute(
+        "SELECT * FROM assessments WHERE id = ? AND user_id = ?",
+        (assessment_id, user_id),
+    ).fetchone()
+    if record is None:
+        raise HTTPException(status_code=404, detail="Assessment not found.")
+
+    execution = db.execute(
+        "SELECT * FROM assessment_workflow_results WHERE assessment_id = ?",
+        (assessment_id,),
+    ).fetchone()
+    if execution is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No combined workflow results are available for this assessment.",
+        )
+
+    experimental_result = (
+        json.loads(execution["experimental_result"])
+        if execution["experimental_result"]
+        else None
+    )
+    assessment_payload = _assessment_payload(record)
+    return {
+        "assessment": assessment_payload,
+        "primary_screen": {
+            "status": "succeeded",
+            "method": "preliminary_rule_based",
+            "risk_category": assessment_payload["risk_category"],
+            "risk_score": assessment_payload["risk_score"],
+            "risk_factors": assessment_payload["risk_factors"],
+            "recommendations": assessment_payload["recommendations"],
+        },
+        "experimental_classifier": {
+            "status": execution["experimental_status"],
+            "result": experimental_result,
+            "message": execution["error_message"],
+        },
+    }
+
+
+def _assessment_features(record) -> dict[str, object]:
+    stored_values = {
+        "evidence_type": record["evidence_type"],
+        "collection_conditions": record["collection_conditions"],
+        "ppe_compliant": bool(record["ppe_compliant"]),
+        "tool_condition": record["tool_condition"],
+        "packaging_condition": record["packaging_condition"],
+        "storage_condition": record["storage_condition"],
+        "separately_packaged": bool(record["separately_packaged"]),
+        "chain_of_custody_documented": bool(record["chain_of_custody_documented"]),
+    }
+    return {column: stored_values[column] for column in FEATURE_COLUMNS}
 
 
 @router.get("/auth/csrf")
@@ -277,32 +416,8 @@ def create_assessment(
     assessment = risk_service.assess(data)
     created_at = datetime.now(timezone.utc).isoformat()
     try:
-        cursor = db.execute(
-            """
-            INSERT INTO assessments (
-                user_id, evidence_ref, evidence_type, collection_conditions,
-                ppe_compliant, tool_condition, packaging_condition, storage_condition,
-                separately_packaged, chain_of_custody_documented, risk_category,
-                risk_score, risk_factors, recommendations, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user["id"],
-                data.evidence_ref,
-                data.evidence_type,
-                data.collection_conditions,
-                int(data.ppe_compliant),
-                data.tool_condition,
-                data.packaging_condition,
-                data.storage_condition,
-                int(data.separately_packaged),
-                int(data.chain_of_custody_documented),
-                assessment.category,
-                assessment.score,
-                json.dumps(assessment.factors),
-                json.dumps(assessment.recommendations),
-                created_at,
-            ),
+        assessment_id = _insert_assessment_record(
+            db, user["id"], data, assessment, created_at
         )
         db.commit()
     except sqlite3.IntegrityError:
@@ -313,9 +428,189 @@ def create_assessment(
 
     record = db.execute(
         "SELECT * FROM assessments WHERE id = ? AND user_id = ?",
-        (cursor.lastrowid, user["id"]),
+        (assessment_id, user["id"]),
     ).fetchone()
     return _assessment_payload(record)
+
+
+@router.post(
+    "/assessments/workflow",
+    status_code=status.HTTP_201_CREATED,
+    response_model=AssessmentWorkflowResponse,
+)
+def create_assessment_workflow(
+    data: AssessmentRequest,
+    request: Request,
+    idempotency_key: Annotated[
+        str, Header(alias="Idempotency-Key", min_length=16, max_length=128)
+    ],
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    payload = data.model_dump(mode="json")
+    request_hash = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    existing = db.execute(
+        """
+        SELECT request_hash, assessment_id
+        FROM assessment_idempotency_keys
+        WHERE user_id = ? AND idempotency_key = ?
+        """,
+        (user["id"], idempotency_key),
+    ).fetchone()
+    if existing is not None:
+        if existing["request_hash"] != request_hash:
+            raise HTTPException(
+                status_code=409,
+                detail="This submission key was already used with different assessment data.",
+            )
+        return _workflow_response(db, user["id"], existing["assessment_id"])
+
+    assessment = risk_service.assess(data)
+    features = {column: payload[column] for column in FEATURE_COLUMNS}
+    execution = _experimental_execution(request, features)
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        existing = db.execute(
+            """
+            SELECT request_hash, assessment_id
+            FROM assessment_idempotency_keys
+            WHERE user_id = ? AND idempotency_key = ?
+            """,
+            (user["id"], idempotency_key),
+        ).fetchone()
+        if existing is not None:
+            if existing["request_hash"] != request_hash:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail="This submission key was already used with different assessment data.",
+                )
+            db.commit()
+            return _workflow_response(db, user["id"], existing["assessment_id"])
+
+        assessment_id = _insert_assessment_record(
+            db, user["id"], data, assessment, created_at
+        )
+        db.execute(
+            """
+            INSERT INTO assessment_workflow_results (
+                assessment_id, experimental_status, experimental_result,
+                error_message, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                assessment_id,
+                execution["status"],
+                json.dumps(execution["result"], sort_keys=True)
+                if execution["result"] is not None
+                else None,
+                execution["message"],
+                created_at,
+            ),
+        )
+        db.execute(
+            """
+            INSERT INTO assessment_idempotency_keys (
+                user_id, idempotency_key, request_hash, assessment_id, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (user["id"], idempotency_key, request_hash, assessment_id, created_at),
+        )
+        db.commit()
+    except sqlite3.IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This evidence reference already has an assessment.",
+        ) from None
+
+    if execution["result"] is not None:
+        append_prediction_log(
+            PREDICTION_LOG_PATH,
+            features,
+            execution["result"]["prediction"],
+        )
+    return _workflow_response(db, user["id"], assessment_id)
+
+
+@router.get(
+    "/assessments/{assessment_id}/workflow",
+    response_model=AssessmentWorkflowResponse,
+)
+def get_assessment_workflow(
+    assessment_id: int,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    return _workflow_response(db, user["id"], assessment_id)
+
+
+@router.post(
+    "/assessments/{assessment_id}/workflow/retry",
+    response_model=AssessmentWorkflowResponse,
+)
+def retry_assessment_classifier(
+    assessment_id: int,
+    request: Request,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    db.execute("BEGIN IMMEDIATE")
+    record = db.execute(
+        "SELECT * FROM assessments WHERE id = ? AND user_id = ?",
+        (assessment_id, user["id"]),
+    ).fetchone()
+    if record is None:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Assessment not found.")
+
+    execution = db.execute(
+        "SELECT * FROM assessment_workflow_results WHERE assessment_id = ?",
+        (assessment_id,),
+    ).fetchone()
+    if execution is None:
+        db.rollback()
+        raise HTTPException(
+            status_code=404,
+            detail="No experimental classifier result exists for this assessment.",
+        )
+    if execution["experimental_status"] == "succeeded":
+        db.commit()
+        return _workflow_response(db, user["id"], assessment_id)
+
+    features = _assessment_features(record)
+    result = _experimental_execution(request, features)
+    db.execute(
+        """
+        UPDATE assessment_workflow_results
+        SET experimental_status = ?, experimental_result = ?,
+            error_message = ?, updated_at = ?
+        WHERE assessment_id = ?
+        """,
+        (
+            result["status"],
+            json.dumps(result["result"], sort_keys=True)
+            if result["result"] is not None
+            else None,
+            result["message"],
+            datetime.now(timezone.utc).isoformat(),
+            assessment_id,
+        ),
+    )
+    db.commit()
+
+    if result["result"] is not None:
+        append_prediction_log(
+            PREDICTION_LOG_PATH,
+            features,
+            result["result"]["prediction"],
+        )
+    return _workflow_response(db, user["id"], assessment_id)
 
 
 @router.get("/assessments", response_model=list[AssessmentResponse])
