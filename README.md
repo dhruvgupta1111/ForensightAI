@@ -81,13 +81,15 @@ Copy-Item .env.example .env
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-Put the generated value in `.env` as `JWT_SECRET_KEY`. Do not commit `.env`. Use `COOKIE_SECURE=false` for local HTTP development; set it to `true` behind HTTPS. Start the application from the project root:
+Put the generated value in `.env` as `JWT_SECRET_KEY`. Do not commit `.env`. Secure cookies are enabled automatically on Render; use `COOKIE_SECURE=true` behind HTTPS elsewhere and `COOKIE_SECURE=false` for local HTTP development. Start the application from the project root:
 
 ```powershell
 python -m uvicorn app.main:app --reload
 ```
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000/). FastAPI Swagger docs are at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). The SQLite application database defaults to `data/forensight.sqlite3`; `DATABASE_PATH` can override it.
+
+Render's container filesystem is ephemeral unless a persistent disk is attached. For a Docker deployment, mount a persistent disk at `/app/data` so the default SQLite database survives deploys and restarts, or set `DATABASE_PATH` to a file beneath the configured disk mount. Back up any existing database before changing the mount: mounting a disk over a directory hides files that were previously stored there.
 
 ## Model experiments, evaluation, and selection
 
@@ -288,8 +290,8 @@ The workflow performs the following steps:
 
 ## Security and privacy
 
-- Passwords use Argon2id hashing; JWT secrets come from environment variables.
-- Authentication uses expiring HS256 JWTs in `HttpOnly`, `SameSite=Strict` cookies; unsafe requests require CSRF validation.
+- Passwords are hashed with `pwdlib`'s recommended Argon2 configuration; signup requires at least 12 characters, while login verifies existing passwords without reapplying signup's minimum.
+- Authentication uses expiring HS256 JWTs in `HttpOnly`, `SameSite=Strict` cookies (`Secure` on Render); unsafe requests require CSRF validation.
 - Protected records and prediction requests require an authenticated account.
 - `.env`, the local application database, MLflow database/artifacts, prediction logs, and Python caches are excluded from Git.
 - The project source code has been pushed to the GitHub repository.

@@ -205,6 +205,94 @@ def test_login_logout_and_user_scoped_assessments(client):
     assert len(client.get("/api/assessments").json()) == 1
 
 
+def test_legacy_short_password_login_normalizes_email_and_preserves_session(client):
+    from app.auth import hash_password
+
+    connection = database.connect()
+    try:
+        connection.execute(
+            """
+            INSERT INTO users (full_name, email, password_hash, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "Legacy Analyst",
+                "Legacy@Example.org",
+                hash_password("old-pass"),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    login = client.post(
+        "/api/auth/login",
+        headers=csrf_headers(client),
+        json={"email": "  LEGACY@EXAMPLE.ORG ", "password": "old-pass"},
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["email"] == "Legacy@Example.org"
+    auth_cookie = login.headers["set-cookie"]
+    assert "httponly" in auth_cookie.lower()
+    assert "samesite=strict" in auth_cookie.lower()
+
+    database.initialize_database()
+    assert client.get("/api/auth/me").json()["user"]["id"] == login.json()["user"]["id"]
+    assert client.get("/api/dashboard").status_code == 200
+
+    assert client.post(
+        "/api/auth/logout", headers=csrf_headers(client)
+    ).status_code == 200
+    assert client.get("/api/dashboard").status_code == 401
+
+
+def test_signup_normalizes_email_and_stores_a_password_hash(client):
+    from app.auth import verify_password
+
+    response = signup(client, email="Analyst@Example.ORG")
+    assert response.status_code == 201
+
+    connection = database.connect()
+    try:
+        user = connection.execute(
+            "SELECT email, password_hash FROM users WHERE id = ?",
+            (response.json()["user"]["id"],),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert user["email"] == "analyst@example.org"
+    assert user["password_hash"] != "Secure-Example-Passphrase-4"
+    assert verify_password("Secure-Example-Passphrase-4", user["password_hash"])
+
+
+def test_signup_still_requires_a_twelve_character_password(client):
+    response = client.post(
+        "/api/auth/signup",
+        headers=csrf_headers(client),
+        json={
+            "full_name": "Legacy Analyst",
+            "email": "legacy@example.org",
+            "password": "old-pass",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_auth_cookie_is_secure_when_secure_cookie_setting_is_enabled(
+    client, monkeypatch
+):
+    import app.routes as routes_module
+
+    monkeypatch.setattr(routes_module, "COOKIE_SECURE", True)
+    secure_client = TestClient(client.app, base_url="https://testserver")
+    response = signup(secure_client)
+
+    assert response.status_code == 201
+    assert "secure" in response.headers["set-cookie"].lower()
+
+
 def test_assessment_is_saved_explained_and_filterable(client):
     assert signup(client).status_code == 201
     assessment = {
@@ -262,6 +350,12 @@ def test_rejects_bad_credentials_validation_and_missing_csrf(client):
         json={"email": "analyst@example.org", "password": "incorrect-password"},
     )
     assert login.status_code == 401
+    unknown = client.post(
+        "/api/auth/login",
+        headers=csrf_headers(client),
+        json={"email": "missing@example.org", "password": "incorrect-password"},
+    )
+    assert unknown.status_code == 401
     duplicate = signup(client)
     assert duplicate.status_code == 409
 
@@ -520,6 +614,11 @@ def test_workspace_removes_model_insights_and_prediction_preview(client):
     page = client.get("/").text
     workspace = page.split('<div id="workspace"', maxsplit=1)[1]
 
+    assert "Preliminary scoring" not in workspace
+    assert "Rule-based indicators, not a trained model." not in workspace
+    assert 'class="method-note"' not in workspace
+    assert 'class="user-block"' in workspace
+    assert 'id="logout-button"' in workspace
     assert 'data-view="model"' not in workspace
     assert 'id="view-model"' not in workspace
     assert "Synthetic model preview" not in workspace

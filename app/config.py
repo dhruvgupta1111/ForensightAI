@@ -15,7 +15,10 @@ if len(JWT_SECRET_KEY.encode("utf-8")) < 32:
 
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
-COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").strip().lower() == "true"
+COOKIE_SECURE = (
+    os.getenv("RENDER", "").strip().lower() == "true"
+    or os.getenv("COOKIE_SECURE", "false").strip().lower() == "true"
+)
 DATABASE_PATH = Path(
     os.getenv("DATABASE_PATH", str(PROJECT_ROOT / "data" / "forensight.sqlite3"))
 ).expanduser()

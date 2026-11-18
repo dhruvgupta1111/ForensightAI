@@ -16,11 +16,12 @@ class Credentials(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     email: EmailStr
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(max_length=128)
 
 
 class SignupRequest(Credentials):
     full_name: str = Field(min_length=2, max_length=100)
+    password: str = Field(min_length=12, max_length=128)
 
 
 class AssessmentRequest(BaseModel):

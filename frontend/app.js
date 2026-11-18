@@ -55,7 +55,9 @@ function setAuthMode(mode) {
   $("#name-field").classList.toggle("hidden", !signupMode);
   $("#name-field input").required = signupMode;
   $("#password-hint").classList.toggle("hidden", !signupMode);
-  $("#auth-form [name=password]").autocomplete = signupMode ? "new-password" : "current-password";
+  const passwordInput = $("#auth-form [name=password]");
+  passwordInput.autocomplete = signupMode ? "new-password" : "current-password";
+  passwordInput.minLength = signupMode ? 12 : 0;
   $("#auth-submit").innerHTML = signupMode ? 'Create account <span aria-hidden="true">→</span>' : 'Sign in <span aria-hidden="true">→</span>';
   $("#auth-switch-copy").textContent = signupMode ? "Already have an account?" : "New to ForenSight?";
   $("#auth-switch").textContent = signupMode ? "Sign in" : "Create an account";
@@ -329,6 +331,8 @@ function navigate(view) {
 }
 
 function showWorkspace(user) {
+  window.clearTimeout(showToast.timeout);
+  $("#toast").classList.remove("show");
   state.user = user;
   $("#landing-page").classList.add("hidden");
   $("#auth-screen").classList.add("hidden");
